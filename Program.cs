@@ -1,78 +1,79 @@
-﻿using System;
+﻿// ============================
+// CLIENT SIDE (Hybrid Encryption)
+// ============================
+
+using System;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 
-namespace TcpMultiClientClient
+class SecureClient
 {
-    class Program
+    static byte[] aesKey;
+
+    static void Main()
     {
-        static void Main()
+        TcpClient client = new TcpClient("127.0.0.1", 5000);
+        NetworkStream stream = client.GetStream();
+
+        // Step 1: Receive RSA public key from server
+        byte[] buffer = new byte[2048];
+        int keyLength = stream.Read(buffer, 0, buffer.Length);
+        string serverPublicKey = Encoding.UTF8.GetString(buffer, 0, keyLength);
+
+        // Step 2: Generate AES key and send encrypted version
+        Aes aes = Aes.Create();
+        aesKey = aes.Key;
+        RSACryptoServiceProvider rsa = new RSACryptoServiceProvider();
+        rsa.FromXmlString(serverPublicKey);
+        byte[] encryptedKey = rsa.Encrypt(aesKey, false);
+        stream.Write(encryptedKey, 0, encryptedKey.Length);
+
+        // Start thread to listen to incoming messages
+        new Thread(() => ListenToServer(stream)).Start();
+
+        Console.Write("Enter your username: ");
+        string username = Console.ReadLine();
+
+        while (true)
         {
-            string serverIp = "127.0.0.1";
-            int port = 5000;
+            string input = Console.ReadLine();
+            if (input.ToLower() == "exit") break;
 
-            try
+            string message = username + ": " + input;
+            using Aes aesLocal = Aes.Create();
+            aesLocal.Key = aesKey;
+            aesLocal.IV = new byte[16];
+            ICryptoTransform encryptor = aesLocal.CreateEncryptor();
+            byte[] encryptedMsg = encryptor.TransformFinalBlock(Encoding.UTF8.GetBytes(message), 0, message.Length);
+
+            stream.Write(encryptedMsg, 0, encryptedMsg.Length);
+        }
+    }
+
+    static void ListenToServer(NetworkStream stream)
+    {
+        byte[] buffer = new byte[2048];
+        try
+        {
+            while (true)
             {
-                TcpClient client = new TcpClient();
-                client.Connect(serverIp, port);
-                Console.WriteLine("Connected to server.");
+                int bytesRead = stream.Read(buffer, 0, buffer.Length);
+                if (bytesRead == 0) break;
 
-                NetworkStream stream = client.GetStream();
-
-                Console.Write("Enter your username: ");
-                string userName = Console.ReadLine();
-
-                // 🧵 Start background thread to listen to server messages
-                Thread listenThread = new Thread(() => ListenToServer(stream));
-                listenThread.IsBackground = true;
-                listenThread.Start();
-
-                // 📨 Main loop to send messages
-                while (true)
-                {
-                    string message = Console.ReadLine();
-
-                    if (message.ToLower() == "exit")
-                        break;
-
-                    string fullMessage = $"{userName}: {message}";
-                    byte[] data = Encoding.UTF8.GetBytes(fullMessage);
-                    stream.Write(data, 0, data.Length);
-                }
-
-                stream.Close();
-                client.Close();
-                Console.WriteLine("Disconnected from server.");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Error: " + ex.Message);
+                using Aes aes = Aes.Create();
+                aes.Key = aesKey;
+                aes.IV = new byte[16];
+                ICryptoTransform decryptor = aes.CreateDecryptor();
+                string message = Encoding.UTF8.GetString(decryptor.TransformFinalBlock(buffer, 0, bytesRead));
+                Console.WriteLine("\n" + message);
+                Console.Write("> ");
             }
         }
-
-        // 🧠 Real-time receiving
-        static void ListenToServer(NetworkStream stream)
+        catch (Exception ex)
         {
-            byte[] buffer = new byte[1024];
-
-            try
-            {
-                while (true)
-                {
-                    int bytesRead = stream.Read(buffer, 0, buffer.Length);
-                    if (bytesRead == 0)
-                        break; // Server closed connection
-
-                    string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                    Console.WriteLine($"\n{message}");
-                    Console.Write("> "); // Refresh prompt
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Disconnected from server: " + ex.Message);
-            }
+            Console.WriteLine("Disconnected: " + ex.Message);
         }
     }
 }
